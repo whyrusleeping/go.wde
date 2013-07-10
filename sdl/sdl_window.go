@@ -2,6 +2,7 @@ package sdlw
 
 import (
 	"image"
+	"image/color"
 	"github.com/skelterjohn/go.wde"
 	"github.com/whyrusleeping/sdl"
 	"runtime"
@@ -13,10 +14,18 @@ func init() {
 		panic(err)
 	}
 	wde.BackendNewWindow = NewWindow
+	ch := make(chan struct{}, 1)
+	wde.BackendRun = func() {
+		<-ch
+	}
+	wde.BackendStop = func() {
+		ch <- struct{}{}
+	}
 }
 
 type Window struct {
 	d *sdl.Display
+	buffer *SdlBuffer
 	lock bool
 
 	closed bool
@@ -29,9 +38,7 @@ type Window struct {
 	width, height int
 }
 
-type point struct {
-	x,y int
-}
+type point image.Point
 
 func NewWindow(width, height int)  (wde.Window, error) {
 	w := new(Window)
@@ -39,6 +46,8 @@ func NewWindow(width, height int)  (wde.Window, error) {
 	w.events = make(chan interface{})
 	w.chSize = make(chan point)
 	w.chTitle = make(chan string)
+
+	w.buffer = NewSdlBuffer(width, height)
 
 	ready := make(chan error)
 	go w.manageThread(width, height, ready)
@@ -93,11 +102,28 @@ func (w *Window) FlushImage(r ...image.Rectangle) {
 	if w.closed {
 		return
 	}
+
+	c := color.RGBA{}
+	for x := 0; x < w.width; x++ {
+		for y := 0; y < w.height; y++ {
+			r,g,b,a := w.buffer.At(x,y).RGBA()
+			c.R = uint8(r)
+			c.G = uint8(g)
+			c.B = uint8(b)
+			c.A = uint8(a)
+			w.d.SetDrawColor(c)
+			w.d.DrawPoint(x,y)
+		}
+	}
 	w.d.Present()
 }
 
 func (w *Window) Screen() wde.Image {
-	return nil
+	return w.buffer
+}
+
+func (w *Window) Show() {
+	w.d.Show()
 }
 
 ///////////////////////
@@ -129,7 +155,7 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 		select {
 		case s := <-w.chSize:
 			if !w.lock {
-				w.d.SetSize(s.x, s.y)
+				w.d.SetSize(s.X, s.Y)
 			}
 		case title := <-w.chTitle:
 			w.d.SetTitle(title)
