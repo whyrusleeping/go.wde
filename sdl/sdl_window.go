@@ -1,6 +1,7 @@
 package sdlw
 
 import (
+	"image"
 	"github.com/skelterjohn/go.wde"
 	"github.com/whyrusleeping/sdl"
 	"runtime"
@@ -11,10 +12,11 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+	wde.BackendNewWindow = NewWindow
 }
 
 type Window struct {
-	w *sdl.Window
+	d *sdl.Display
 	lock bool
 
 	closed bool
@@ -23,23 +25,25 @@ type Window struct {
 
 	chTitle chan string
 	chSize chan point
+
+	width, height int
 }
 
 type point struct {
 	x,y int
 }
 
-func NewWindow(width, height int)  (w *Window, err error) {
-	w = new(Window)
+func NewWindow(width, height int)  (wde.Window, error) {
+	w := new(Window)
 
 	w.events = make(chan interface{})
 	w.chSize = make(chan point)
 	w.chTitle = make(chan string)
 
 	ready := make(chan error)
-	go w.manageThread(ready)
-	err = <-ready
-	return
+	go w.manageThread(width, height, ready)
+	err := <-ready
+	return w, err
 }
 
 ///////////////////
@@ -64,7 +68,7 @@ func (w *Window) Size() (width, height int) {
 	if w.closed {
 		return
 	}
-	width, height = w.w.Size()
+	width, height = w.d.Size()
 	return
 }
 
@@ -77,12 +81,22 @@ func (w *Window) EventChan() <-chan interface{} {
 }
 
 func (w *Window) Close() error {
-	w.w.Destroy()
-	w.w.Free()
+	w.d.Window.Destroy()
 	close(w.events)
 	close(w.chSize)
 	close(w.chTitle)
 	w.closed = true
+	return nil
+}
+
+func (w *Window) FlushImage(r ...image.Rectangle) {
+	if w.closed {
+		return
+	}
+	w.d.Present()
+}
+
+func (w *Window) Screen() wde.Image {
 	return nil
 }
 
@@ -99,14 +113,14 @@ func (w *Window) collectEvents() {
 	}
 }
 
-func (w *Window) manageThread(ready chan error) {
+func (w *Window) manageThread(width, height int, ready chan error) {
 	runtime.LockOSThread()
 	screen, err := sdl.NewDisplay(width, height, sdl.WINDOW_OPENGL)
 	if err != nil {
 		ready <- err
 		return
 	}
-	w.w = screen
+	w.d = screen
 
 	go w.collectEvents()
 
@@ -115,10 +129,10 @@ func (w *Window) manageThread(ready chan error) {
 		select {
 		case s := <-w.chSize:
 			if !w.lock {
-				w.w.SetSize(width, height)
+				w.d.SetSize(s.x, s.y)
 			}
 		case title := <-w.chTitle:
-			w.SetTitle(title)
+			w.d.SetTitle(title)
 
 		}
 	}
