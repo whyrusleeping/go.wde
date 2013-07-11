@@ -34,6 +34,8 @@ type Window struct {
 
 	chTitle chan string
 	chSize chan point
+	chFlush chan struct{}
+	chShow chan struct{}
 
 	width, height int
 }
@@ -46,6 +48,8 @@ func NewWindow(width, height int)  (wde.Window, error) {
 	w.events = make(chan interface{})
 	w.chSize = make(chan point)
 	w.chTitle = make(chan string)
+	w.chFlush = make(chan struct{})
+	w.chShow = make(chan struct{})
 
 	w.buffer = NewSdlBuffer(width, height)
 
@@ -102,20 +106,7 @@ func (w *Window) FlushImage(r ...image.Rectangle) {
 	if w.closed {
 		return
 	}
-
-	c := color.RGBA{}
-	for x := 0; x < w.width; x++ {
-		for y := 0; y < w.height; y++ {
-			r,g,b,a := w.buffer.At(x,y).RGBA()
-			c.R = uint8(r)
-			c.G = uint8(g)
-			c.B = uint8(b)
-			c.A = uint8(a)
-			w.d.SetDrawColor(c)
-			w.d.DrawPoint(x,y)
-		}
-	}
-	w.d.Present()
+	w.chFlush <- struct{}{}
 }
 
 func (w *Window) Screen() wde.Image {
@@ -123,7 +114,7 @@ func (w *Window) Screen() wde.Image {
 }
 
 func (w *Window) Show() {
-	w.d.Show()
+	w.chShow <- struct{}{}
 }
 
 ///////////////////////
@@ -159,7 +150,22 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 			}
 		case title := <-w.chTitle:
 			w.d.SetTitle(title)
-
+		case <-w.chShow:
+			w.d.Show()
+		case <-w.chFlush:
+			c := color.RGBA{}
+			for x := 0; x < w.width; x++ {
+				for y := 0; y < w.height; y++ {
+					r,g,b,a := w.buffer.At(x,y).RGBA()
+					c.R = uint8(r)
+					c.G = uint8(g)
+					c.B = uint8(b)
+					c.A = uint8(a)
+					w.d.SetDrawColor(c)
+					w.d.DrawPoint(x,y)
+				}
+			}
+			w.d.Present()
 		}
 	}
 }
