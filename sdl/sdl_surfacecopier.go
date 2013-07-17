@@ -2,6 +2,7 @@ package sdlw
 
 import (
 	"image"
+	"image/color"
 )
 
 type SdlBuffer struct {
@@ -26,4 +27,12 @@ func (s *SdlBuffer) CopyRGBA(src *image.RGBA, r image.Rectangle) {
 	}
 }
 
-
+func (s *SdlBuffer) Clear() {
+	c := color.RGBA{0,0,0,0}
+	r := s.Bounds().Size()
+	for x := 0; x < r.X; x++ {
+		for y := 0; y < r.Y; y++ {
+			s.Set(x,y,c)
+		}
+	}
+}

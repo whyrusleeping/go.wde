@@ -1,25 +1,31 @@
 package sdlw
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"github.com/skelterjohn/go.wde"
 	"github.com/whyrusleeping/sdl"
 	"runtime"
+	"log"
 )
 
 func init() {
+	if runtime.GOMAXPROCS(0) < 2 {
+		runtime.GOMAXPROCS(2)
+	}
+	wde.BackendNewWindow = NewWindow
 	err := sdl.Init(sdl.INIT_EVERYTHING)
 	if err != nil {
 		panic(err)
 	}
-	wde.BackendNewWindow = NewWindow
 	ch := make(chan struct{}, 1)
 	wde.BackendRun = func() {
 		<-ch
 	}
 	wde.BackendStop = func() {
 		ch <- struct{}{}
+		sdl.Quit()
 	}
 }
 
@@ -43,7 +49,10 @@ type Window struct {
 type point image.Point
 
 func NewWindow(width, height int)  (wde.Window, error) {
+	fmt.Println("new window!!")
 	w := new(Window)
+	w.width = width
+	w.height = height
 
 	w.events = make(chan interface{})
 	w.chSize = make(chan point)
@@ -127,6 +136,27 @@ func (w *Window) collectEvents() {
 			continue
 		}
 		//Event translation
+		switch e := e.(type) {
+		case *sdl.KeyboardEvent:
+			if e.Type == sdl.KEYDOWN {
+				rev := new(wde.KeyDownEvent)
+				rev.Key = ConvertKeyCode(e.ScanCode)
+				w.events <- rev
+			} else if e.Type == sdl.KEYUP {
+				rev := new(wde.KeyUpEvent)
+				rev.Key = ConvertKeyCode(e.ScanCode)
+				w.events <- rev
+			}
+		case *sdl.MouseButtonEvent:
+			fmt.Println("Mouse button event...")
+			rev := new(wde.MouseButtonEvent)
+			rev.Which = wde.Button(1 << e.Button)
+			log.Printf("Button: %d\n",e.Button)
+			rev.Where = image.Pt(e.X,e.Y)
+			w.events <- rev
+		case *sdl.MouseMotionEvent:
+		case *sdl.MouseWheelEvent:
+		}
 	}
 }
 
@@ -166,6 +196,18 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 				}
 			}
 			w.d.Present()
+			w.buffer.Clear()
 		}
 	}
+}
+
+func ConvertKeyCode(key int32) string {
+	//v, ok := keyMap[key]
+	if int(key) >= len(keys) || key < 4 {
+		fmt.Printf("Unrecognized keycode: %d\n",key);
+		return ""
+	}
+	fmt.Printf("Key: %d %s\n", key, keys[key])
+
+	return keys[key]
 }
