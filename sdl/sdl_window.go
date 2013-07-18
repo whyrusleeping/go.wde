@@ -11,9 +11,11 @@ import (
 )
 
 func init() {
+	/*
 	if runtime.GOMAXPROCS(0) < 2 {
 		runtime.GOMAXPROCS(2)
 	}
+	*/
 	wde.BackendNewWindow = NewWindow
 	err := sdl.Init(sdl.INIT_EVERYTHING)
 	if err != nil {
@@ -44,6 +46,7 @@ type Window struct {
 	chShow chan struct{}
 
 	width, height int
+	keychords []string
 }
 
 type point image.Point
@@ -129,6 +132,27 @@ func (w *Window) Show() {
 ///////////////////////
 //Non interface methods
 ///////////////////////
+func (w *Window) addKeyChord(key string) {
+	w.keychords = append(w.keychords, key)
+}
+
+func (w *Window) removeKeyChord(key string) {
+	for i,k := range w.keychords {
+		if k == key {
+			w.keychords = append(w.keychords[:i], w.keychords[i+1:]...)
+			return
+		}
+	}
+}
+
+func (w *Window) getChord() (chord string) {
+	chord = ""
+	for _,k := range w.keychords {
+		chord += k
+	}
+	return
+}
+
 func (w *Window) collectEvents() {
 	for {
 		e := sdl.PollEvent()
@@ -141,10 +165,12 @@ func (w *Window) collectEvents() {
 			if e.Type == sdl.KEYDOWN {
 				rev := new(wde.KeyDownEvent)
 				rev.Key = ConvertKeyCode(e.ScanCode)
+				w.addKeyChord(rev.Key)
 				w.events <- rev
 			} else if e.Type == sdl.KEYUP {
 				rev := new(wde.KeyUpEvent)
 				rev.Key = ConvertKeyCode(e.ScanCode)
+				w.removeKeyChord(rev.Key)
 				w.events <- rev
 			}
 		case *sdl.MouseButtonEvent:
@@ -155,7 +181,26 @@ func (w *Window) collectEvents() {
 			rev.Where = image.Pt(e.X,e.Y)
 			w.events <- rev
 		case *sdl.MouseMotionEvent:
+
 		case *sdl.MouseWheelEvent:
+		case *sdl.QuitEvent:
+			w.events <- new(wde.CloseEvent)
+		case *sdl.WindowEvent:
+			switch e.Event {
+				//http://wiki.libsdl.org/moin.fcg/SDL_WindowEvent
+			case sdl.WINDOWEVENT_ENTER:
+				w.events <- new(wde.MouseEnteredEvent)
+				log.Println("Mouse enter...")
+			case sdl.WINDOWEVENT_LEAVE:
+				w.events <- new(wde.MouseExitedEvent)
+				log.Println("Mouse leave...")
+			case sdl.WINDOWEVENT_RESIZED:
+				rev := new(wde.ResizeEvent)
+				rev.Height = e.Data[1]
+				rev.Width = e.Data[0]
+				w.events <- rev
+			}
+			
 		}
 	}
 }
