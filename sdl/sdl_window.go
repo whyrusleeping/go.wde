@@ -11,11 +11,6 @@ import (
 )
 
 func init() {
-	/*
-	if runtime.GOMAXPROCS(0) < 2 {
-		runtime.GOMAXPROCS(2)
-	}
-	*/
 	wde.BackendNewWindow = NewWindow
 	err := sdl.Init(sdl.INIT_EVERYTHING)
 	if err != nil {
@@ -46,7 +41,7 @@ type Window struct {
 	chShow chan struct{}
 
 	width, height int
-	keychords []string
+	keychords map[string]bool
 }
 
 type point image.Point
@@ -132,27 +127,6 @@ func (w *Window) Show() {
 ///////////////////////
 //Non interface methods
 ///////////////////////
-func (w *Window) addKeyChord(key string) {
-	w.keychords = append(w.keychords, key)
-}
-
-func (w *Window) removeKeyChord(key string) {
-	for i,k := range w.keychords {
-		if k == key {
-			w.keychords = append(w.keychords[:i], w.keychords[i+1:]...)
-			return
-		}
-	}
-}
-
-func (w *Window) getChord() (chord string) {
-	chord = ""
-	for _,k := range w.keychords {
-		chord += k
-	}
-	return
-}
-
 func (w *Window) collectEvents() {
 	for {
 		e := sdl.PollEvent()
@@ -165,14 +139,17 @@ func (w *Window) collectEvents() {
 			if e.Type == sdl.KEYDOWN {
 				rev := new(wde.KeyDownEvent)
 				rev.Key = ConvertKeyCode(e.ScanCode)
-				w.addKeyChord(rev.Key)
+				w.keychords[rev.Key] = true
 				w.events <- rev
 			} else if e.Type == sdl.KEYUP {
 				rev := new(wde.KeyUpEvent)
 				rev.Key = ConvertKeyCode(e.ScanCode)
-				w.removeKeyChord(rev.Key)
+				w.keychords[rev.Key] = false
 				w.events <- rev
 			}
+			chord := new(wde.KeyTypedEvent)
+			chord.Chord = wde.ConstructChord(w.keys)
+			w.events <- rev
 		case *sdl.MouseButtonEvent:
 			fmt.Println("Mouse button event...")
 			rev := new(wde.MouseButtonEvent)
