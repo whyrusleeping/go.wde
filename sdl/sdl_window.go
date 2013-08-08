@@ -28,6 +28,7 @@ func init() {
 
 type Window struct {
 	d *sdl.Display
+	context sdl.GLContext
 	buffer *SdlBuffer
 	lock bool
 
@@ -59,6 +60,7 @@ func NewWindow(width, height int)  (wde.Window, error) {
 	w.chShow = make(chan struct{})
 
 	w.buffer = NewSdlBuffer(width, height)
+	w.keychords	= make(map[string]bool)
 
 	ready := make(chan error)
 	go w.manageThread(width, height, ready)
@@ -148,8 +150,8 @@ func (w *Window) collectEvents() {
 				w.events <- rev
 			}
 			chord := new(wde.KeyTypedEvent)
-			chord.Chord = wde.ConstructChord(w.keys)
-			w.events <- rev
+			chord.Chord = wde.ConstructChord(w.keychords)
+			w.events <- chord
 		case *sdl.MouseButtonEvent:
 			fmt.Println("Mouse button event...")
 			rev := new(wde.MouseButtonEvent)
@@ -165,6 +167,18 @@ func (w *Window) collectEvents() {
 		case *sdl.WindowEvent:
 			switch e.Event {
 				//http://wiki.libsdl.org/moin.fcg/SDL_WindowEvent
+			case sdl.WINDOWEVENT_SHOWN:
+				log.Println("Window shown!")
+			case sdl.WINDOWEVENT_RESTORED:
+				log.Println("Window restored.")
+			case sdl.WINDOWEVENT_EXPOSED:
+				log.Println("Window exposed, whatever that means...")
+			case sdl.WINDOWEVENT_HIDDEN:
+				log.Println("Window hidden.. sneaky thing.")
+			case sdl.WINDOWEVENT_MAXIMIZED:
+				log.Println("Window Maximized!")
+			case sdl.WINDOWEVENT_MINIMIZED:
+				log.Println("Window Minimized!")
 			case sdl.WINDOWEVENT_ENTER:
 				w.events <- new(wde.MouseEnteredEvent)
 				log.Println("Mouse enter...")
@@ -172,12 +186,23 @@ func (w *Window) collectEvents() {
 				w.events <- new(wde.MouseExitedEvent)
 				log.Println("Mouse leave...")
 			case sdl.WINDOWEVENT_RESIZED:
+				log.Printf("resize to: %d %d\n", e.Data[0], e.Data[1])
 				rev := new(wde.ResizeEvent)
 				rev.Height = e.Data[1]
 				rev.Width = e.Data[0]
 				w.events <- rev
+			case sdl.WINDOWEVENT_CLOSE:
+				log.Println("Close the window please.")
+				w.events <- &wde.CloseEvent{}
+			case sdl.WINDOWEVENT_FOCUS_GAINED:
+				log.Println("Focus gained, woot!")
+			case sdl.WINDOWEVENT_FOCUS_LOST:
+				log.Println("Focus lost, must have ADHD.")
+			case sdl.WINDOWEVENT_MOVED:
+				log.Printf("please move window to %d %d.\n", e.Data[0], e.Data[1])
+			default:
+				log.Printf("UNRECOGNIZED WINDOW EVENT: %d\n", e.Event)
 			}
-			
 		}
 	}
 }
@@ -185,11 +210,15 @@ func (w *Window) collectEvents() {
 func (w *Window) manageThread(width, height int, ready chan error) {
 	runtime.LockOSThread()
 	screen, err := sdl.NewDisplay(width, height, sdl.WINDOW_OPENGL)
+
 	if err != nil {
 		ready <- err
 		return
 	}
+
+	w.context = screen.CreateGLContext()
 	w.d = screen
+	w.d.Present()
 
 	go w.collectEvents()
 
@@ -205,6 +234,7 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 		case <-w.chShow:
 			w.d.Show()
 		case <-w.chFlush:
+			w.d.MakeGLCurrent(w.context)
 			c := color.RGBA{}
 			for x := 0; x < w.width; x++ {
 				for y := 0; y < w.height; y++ {
