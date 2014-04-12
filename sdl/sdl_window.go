@@ -3,19 +3,16 @@ package sdlw
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"github.com/skelterjohn/go.wde"
-	"github.com/whyrusleeping/sdl"
+	"github.com/jackyb/go-sdl2/sdl"
 	"runtime"
 	"log"
 )
 
 func init() {
 	wde.BackendNewWindow = NewWindow
-	err := sdl.Init(sdl.INIT_EVERYTHING)
-	if err != nil {
-		panic(err)
-	}
+	sdl.Init(sdl.INIT_EVERYTHING)
+
 	ch := make(chan struct{}, 1)
 	wde.BackendRun = func() {
 		<-ch
@@ -27,8 +24,8 @@ func init() {
 }
 
 type Window struct {
-	d *sdl.Display
-	context sdl.GLContext
+	w *sdl.Window
+	r *sdl.Renderer
 	buffer *SdlBuffer
 	lock bool
 
@@ -90,8 +87,7 @@ func (w *Window) Size() (width, height int) {
 	if w.closed {
 		return
 	}
-	width, height = w.d.Size()
-	return
+	return w.w.GetSize()
 }
 
 func (w *Window) LockSize(lock bool) {
@@ -103,7 +99,7 @@ func (w *Window) EventChan() <-chan interface{} {
 }
 
 func (w *Window) Close() error {
-	w.d.Window.Destroy()
+	w.w.Destroy()
 	close(w.events)
 	close(w.chSize)
 	close(w.chTitle)
@@ -137,18 +133,19 @@ func (w *Window) collectEvents() {
 		}
 		//Event translation
 		switch e := e.(type) {
-		case *sdl.KeyboardEvent:
-			if e.Type == sdl.KEYDOWN {
-				rev := new(wde.KeyDownEvent)
-				rev.Key = ConvertKeyCode(e.ScanCode)
-				w.keychords[rev.Key] = true
-				w.events <- rev
-			} else if e.Type == sdl.KEYUP {
-				rev := new(wde.KeyUpEvent)
-				rev.Key = ConvertKeyCode(e.ScanCode)
-				w.keychords[rev.Key] = false
-				w.events <- rev
-			}
+		case *sdl.KeyDownEvent:
+			rev := new(wde.KeyDownEvent)
+			rev.Key = ConvertKeyCode(e.Keysym.Scancode)
+			w.keychords[rev.Key] = true
+			w.events <- rev
+			chord := new(wde.KeyTypedEvent)
+			chord.Chord = wde.ConstructChord(w.keychords)
+			w.events <- chord
+		case *sdl.KeyUpEvent:
+			rev := new(wde.KeyUpEvent)
+			rev.Key = ConvertKeyCode(e.Keysym.Scancode)
+			w.keychords[rev.Key] = false
+			w.events <- rev
 			chord := new(wde.KeyTypedEvent)
 			chord.Chord = wde.ConstructChord(w.keychords)
 			w.events <- chord
@@ -157,7 +154,7 @@ func (w *Window) collectEvents() {
 			rev := new(wde.MouseButtonEvent)
 			rev.Which = wde.Button(1 << e.Button)
 			log.Printf("Button: %d\n",e.Button)
-			rev.Where = image.Pt(e.X,e.Y)
+			rev.Where = image.Pt(int(e.X),int(e.Y))
 			w.events <- rev
 		case *sdl.MouseMotionEvent:
 
@@ -186,10 +183,10 @@ func (w *Window) collectEvents() {
 				w.events <- new(wde.MouseExitedEvent)
 				log.Println("Mouse leave...")
 			case sdl.WINDOWEVENT_RESIZED:
-				log.Printf("resize to: %d %d\n", e.Data[0], e.Data[1])
+				log.Printf("resize to: %d %d\n", e.Data1, e.Data2)
 				rev := new(wde.ResizeEvent)
-				rev.Height = e.Data[1]
-				rev.Width = e.Data[0]
+				rev.Height = int(e.Data1)
+				rev.Width = int(e.Data2)
 				w.events <- rev
 			case sdl.WINDOWEVENT_CLOSE:
 				log.Println("Close the window please.")
@@ -199,7 +196,7 @@ func (w *Window) collectEvents() {
 			case sdl.WINDOWEVENT_FOCUS_LOST:
 				log.Println("Focus lost, must have ADHD.")
 			case sdl.WINDOWEVENT_MOVED:
-				log.Printf("please move window to %d %d.\n", e.Data[0], e.Data[1])
+				log.Printf("please move window to %d %d.\n", e.Data1, e.Data2)
 			default:
 				log.Printf("UNRECOGNIZED WINDOW EVENT: %d\n", e.Event)
 			}
@@ -209,16 +206,12 @@ func (w *Window) collectEvents() {
 
 func (w *Window) manageThread(width, height int, ready chan error) {
 	runtime.LockOSThread()
-	screen, err := sdl.NewDisplay(width, height, sdl.WINDOW_OPENGL)
+	window, render := sdl.CreateWindowAndRenderer(width, height, sdl.WINDOW_OPENGL)
 
-	if err != nil {
-		ready <- err
-		return
-	}
+	w.w = window
+	w.r = render
 
-	w.context = screen.CreateGLContext()
-	w.d = screen
-	w.d.Present()
+	w.w.Show()
 
 	go w.collectEvents()
 
@@ -227,39 +220,34 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 		select {
 		case s := <-w.chSize:
 			if !w.lock {
-				w.d.SetSize(s.X, s.Y)
+				w.w.SetSize(s.X, s.Y)
 			}
 		case title := <-w.chTitle:
-			w.d.SetTitle(title)
+			w.w.SetTitle(title)
 		case <-w.chShow:
-			w.d.Show()
+			w.w.Show()
 		case <-w.chFlush:
-			w.d.MakeGLCurrent(w.context)
-			c := color.RGBA{}
 			for x := 0; x < w.width; x++ {
 				for y := 0; y < w.height; y++ {
 					r,g,b,a := w.buffer.At(x,y).RGBA()
-					c.R = uint8(r)
-					c.G = uint8(g)
-					c.B = uint8(b)
-					c.A = uint8(a)
-					w.d.SetDrawColor(c)
-					w.d.DrawPoint(x,y)
+					w.r.SetDrawColor(uint8(r),uint8(g),uint8(b),uint8(a))
+					w.r.DrawPoint(x,y)
 				}
 			}
-			w.d.Present()
+			w.r.Present()
 			w.buffer.Clear()
 		}
 	}
 }
 
-func ConvertKeyCode(key int32) string {
+func ConvertKeyCode(key sdl.Scancode) string {
 	//v, ok := keyMap[key]
 	if int(key) >= len(keys) || key < 4 {
 		fmt.Printf("Unrecognized keycode: %d\n",key);
 		return ""
 	}
-	fmt.Printf("Key: %d %s\n", key, keys[key])
+	ikey := int(key)
+	fmt.Printf("Key: %d %s\n", key, keys[ikey])
 
-	return keys[key]
+	return keys[ikey]
 }
