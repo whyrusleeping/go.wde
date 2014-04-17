@@ -16,6 +16,7 @@ var windowFlush chan *Window
 var windowChSize chan *Window
 var windowTitle chan *Window
 var active *Window
+var keychords map[string]bool
 
 var events chan interface{}
 
@@ -24,6 +25,8 @@ func init() {
 	wde.BackendNewWindow = NewWindow
 	e := sdl.Init(sdl.INIT_EVERYTHING)
 	fmt.Printf("SDL_Init returned: %d\n", e)
+
+	keychords	= make(map[string]bool)
 
 	newWindow = make(chan *Window)
 	windowShow = make(chan *Window)
@@ -71,7 +74,6 @@ func NewWindow(width, height int)  (wde.Window, error) {
 	w.height = height
 
 	w.buffer = NewSdlBuffer(width, height)
-	w.keychords	= make(map[string]bool)
 
 	w.opdone = make(chan struct{})
 	newWindow<-w
@@ -176,11 +178,14 @@ func sdlWindowLoop() {
 		case w := <-windowTitle:
 			w.w.SetTitle(w.title)
 			w.opdone <- struct{}{}
+		default:
+			for collectEvents() {}
+			time.Sleep(time.Millisecond * 10);
 		}
 	}
 }
 
-func (w *Window) collectEvents() bool {
+func collectEvents() bool {
 	e := sdl.PollEvent()
 	if e == nil {
 		return false
@@ -190,19 +195,19 @@ func (w *Window) collectEvents() bool {
 	case *sdl.KeyDownEvent:
 		rev := new(wde.KeyDownEvent)
 		rev.Key = ConvertKeyCode(e.Keysym.Scancode)
-		w.keychords[rev.Key] = true
+		keychords[rev.Key] = true
 		events <- rev
 		chord := new(wde.KeyTypedEvent)
-		chord.Chord = wde.ConstructChord(w.keychords)
+		chord.Chord = wde.ConstructChord(keychords)
 		events <- chord
 		return true
 	case *sdl.KeyUpEvent:
 		rev := new(wde.KeyUpEvent)
 		rev.Key = ConvertKeyCode(e.Keysym.Scancode)
-		w.keychords[rev.Key] = false
+		keychords[rev.Key] = false
 		events <- rev
 		chord := new(wde.KeyTypedEvent)
-		chord.Chord = wde.ConstructChord(w.keychords)
+		chord.Chord = wde.ConstructChord(keychords)
 		events <- chord
 		return true
 	case *sdl.MouseButtonEvent:
