@@ -9,12 +9,33 @@ import (
 	"log"
 )
 
+var windowList []*Window
+var newWindow chan *Window
+var windowShow chan *Window
+var windowFlush chan *Window
+var windowChSize chan *Window
+var windowTitle chan *Window
+var active *Window
+
+var events chan interface{}
+
 func init() {
+	fmt.Println("Initializing!")
 	wde.BackendNewWindow = NewWindow
-	sdl.Init(sdl.INIT_EVERYTHING)
+	e := sdl.Init(sdl.INIT_EVERYTHING)
+	fmt.Printf("SDL_Init returned: %d\n", e)
+
+	newWindow = make(chan *Window)
+	windowShow = make(chan *Window)
+	windowFlush = make(chan *Window)
+	windowChSize = make(chan *Window)
+	windowTitle = make(chan *Window)
+
+	events = make(chan interface{}, 32)
 
 	ch := make(chan struct{}, 1)
 	wde.BackendRun = func() {
+		go sdlWindowLoop()
 		<-ch
 	}
 	wde.BackendStop = func() {
@@ -31,12 +52,11 @@ type Window struct {
 
 	closed bool
 
-	events chan interface{}
+	Id int
 
-	chTitle chan string
-	chSize chan point
-	chFlush chan struct{}
-	chShow chan struct{}
+	title string
+
+	opdone chan struct{}
 
 	width, height int
 	keychords map[string]bool
@@ -45,24 +65,18 @@ type Window struct {
 type point image.Point
 
 func NewWindow(width, height int)  (wde.Window, error) {
-	fmt.Println("new window!!")
+	fmt.Printf("new window, width %d height %d\n", width, height)
 	w := new(Window)
 	w.width = width
 	w.height = height
 
-	w.events = make(chan interface{})
-	w.chSize = make(chan point)
-	w.chTitle = make(chan string)
-	w.chFlush = make(chan struct{})
-	w.chShow = make(chan struct{})
-
 	w.buffer = NewSdlBuffer(width, height)
 	w.keychords	= make(map[string]bool)
 
-	ready := make(chan error)
-	go w.manageThread(width, height, ready)
-	err := <-ready
-	return w, err
+	w.opdone = make(chan struct{})
+	newWindow<-w
+	<-w.opdone
+	return w, nil
 }
 
 ///////////////////
@@ -73,14 +87,19 @@ func (w *Window) SetTitle(title string) {
 	if w.closed {
 		return
 	}
-	w.chTitle <- title
+	w.title = title
+	windowTitle <- w
+	<-w.opdone
 }
 
 func (w *Window) SetSize(width, height int) {
 	if w.closed {
 		return
 	}
-	w.chSize <- point{width,height}
+	w.width = width
+	w.height = height
+	windowChSize <- w
+	<-w.opdone
 }
 
 func (w *Window) Size() (width, height int) {
@@ -95,14 +114,11 @@ func (w *Window) LockSize(lock bool) {
 }
 
 func (w *Window) EventChan() <-chan interface{} {
-	return w.events
+	return events
 }
 
 func (w *Window) Close() error {
 	w.w.Destroy()
-	close(w.events)
-	close(w.chSize)
-	close(w.chTitle)
 	w.closed = true
 	return nil
 }
@@ -111,7 +127,8 @@ func (w *Window) FlushImage(r ...image.Rectangle) {
 	if w.closed {
 		return
 	}
-	w.chFlush <- struct{}{}
+	windowFlush <- w
+	<-w.opdone
 }
 
 func (w *Window) Screen() wde.Image {
@@ -119,97 +136,169 @@ func (w *Window) Screen() wde.Image {
 }
 
 func (w *Window) Show() {
-	w.chShow <- struct{}{}
+	windowShow <- w
+	<-w.opdone
 }
 
 ///////////////////////
 //Non interface methods
 ///////////////////////
-func (w *Window) collectEvents() {
-	for {
-		e := sdl.PollEvent()
-		if e == nil {
-			continue
-		}
-		//Event translation
-		switch e := e.(type) {
-		case *sdl.KeyDownEvent:
-			rev := new(wde.KeyDownEvent)
-			rev.Key = ConvertKeyCode(e.Keysym.Scancode)
-			w.keychords[rev.Key] = true
-			w.events <- rev
-			chord := new(wde.KeyTypedEvent)
-			chord.Chord = wde.ConstructChord(w.keychords)
-			w.events <- chord
-		case *sdl.KeyUpEvent:
-			rev := new(wde.KeyUpEvent)
-			rev.Key = ConvertKeyCode(e.Keysym.Scancode)
-			w.keychords[rev.Key] = false
-			w.events <- rev
-			chord := new(wde.KeyTypedEvent)
-			chord.Chord = wde.ConstructChord(w.keychords)
-			w.events <- chord
-		case *sdl.MouseButtonEvent:
-			fmt.Println("Mouse button event...")
-			rev := new(wde.MouseButtonEvent)
-			rev.Which = wde.Button(1 << e.Button)
-			log.Printf("Button: %d\n",e.Button)
-			rev.Where = image.Pt(int(e.X),int(e.Y))
-			w.events <- rev
-		case *sdl.MouseMotionEvent:
 
-		case *sdl.MouseWheelEvent:
-		case *sdl.QuitEvent:
-			w.events <- new(wde.CloseEvent)
-		case *sdl.WindowEvent:
-			switch e.Event {
-				//http://wiki.libsdl.org/moin.fcg/SDL_WindowEvent
-			case sdl.WINDOWEVENT_SHOWN:
-				log.Println("Window shown!")
-			case sdl.WINDOWEVENT_RESTORED:
-				log.Println("Window restored.")
-			case sdl.WINDOWEVENT_EXPOSED:
-				log.Println("Window exposed, whatever that means...")
-			case sdl.WINDOWEVENT_HIDDEN:
-				log.Println("Window hidden.. sneaky thing.")
-			case sdl.WINDOWEVENT_MAXIMIZED:
-				log.Println("Window Maximized!")
-			case sdl.WINDOWEVENT_MINIMIZED:
-				log.Println("Window Minimized!")
-			case sdl.WINDOWEVENT_ENTER:
-				w.events <- new(wde.MouseEnteredEvent)
-				log.Println("Mouse enter...")
-			case sdl.WINDOWEVENT_LEAVE:
-				w.events <- new(wde.MouseExitedEvent)
-				log.Println("Mouse leave...")
-			case sdl.WINDOWEVENT_RESIZED:
-				log.Printf("resize to: %d %d\n", e.Data1, e.Data2)
-				rev := new(wde.ResizeEvent)
-				rev.Height = int(e.Data1)
-				rev.Width = int(e.Data2)
-				w.events <- rev
-			case sdl.WINDOWEVENT_CLOSE:
-				log.Println("Close the window please.")
-				w.events <- &wde.CloseEvent{}
-			case sdl.WINDOWEVENT_FOCUS_GAINED:
-				log.Println("Focus gained, woot!")
-			case sdl.WINDOWEVENT_FOCUS_LOST:
-				log.Println("Focus lost, must have ADHD.")
-			case sdl.WINDOWEVENT_MOVED:
-				log.Printf("please move window to %d %d.\n", e.Data1, e.Data2)
-			default:
-				log.Printf("UNRECOGNIZED WINDOW EVENT: %d\n", e.Event)
+//Main thread for sdl calls to be made in
+func sdlWindowLoop() {
+	runtime.LockOSThread()
+	for {
+		select {
+		case w := <-newWindow:
+			w.Id = len(windowList)
+			windowList = append(windowList, w)
+			w.setupWindow()
+			w.opdone<-struct{}{}
+		case w := <-windowFlush:
+			for x := 0; x < w.width; x++ {
+				for y := 0; y < w.height; y++ {
+					r,g,b,a := w.buffer.At(x,y).RGBA()
+					w.r.SetDrawColor(uint8(r),uint8(g),uint8(b),uint8(a))
+					w.r.DrawPoint(x,y)
+				}
 			}
+			w.r.Present()
+			w.buffer.Clear()
+			w.opdone<-struct{}{}
+		case w := <-windowShow:
+			w.w.Show()
+			w.opdone<-struct{}{}
+		case w := <-windowChSize:
+			if !w.lock {
+				w.w.SetSize(w.width, w.height)
+			}
+			w.opdone<-struct{}{}
+		case w := <-windowTitle:
+			w.w.SetTitle(w.title)
+			w.opdone <- struct{}{}
 		}
 	}
 }
 
-func (w *Window) manageThread(width, height int, ready chan error) {
-	runtime.LockOSThread()
-	window, render := sdl.CreateWindowAndRenderer(width, height, sdl.WINDOW_OPENGL)
+func (w *Window) collectEvents() bool {
+	e := sdl.PollEvent()
+	if e == nil {
+		return false
+	}
+	//Event translation
+	switch e := e.(type) {
+	case *sdl.KeyDownEvent:
+		rev := new(wde.KeyDownEvent)
+		rev.Key = ConvertKeyCode(e.Keysym.Scancode)
+		w.keychords[rev.Key] = true
+		events <- rev
+		chord := new(wde.KeyTypedEvent)
+		chord.Chord = wde.ConstructChord(w.keychords)
+		events <- chord
+		return true
+	case *sdl.KeyUpEvent:
+		rev := new(wde.KeyUpEvent)
+		rev.Key = ConvertKeyCode(e.Keysym.Scancode)
+		w.keychords[rev.Key] = false
+		events <- rev
+		chord := new(wde.KeyTypedEvent)
+		chord.Chord = wde.ConstructChord(w.keychords)
+		events <- chord
+		return true
+	case *sdl.MouseButtonEvent:
+		fmt.Println("Mouse button event...")
+		rev := new(wde.MouseButtonEvent)
+		rev.Which = wde.Button(1 << e.Button)
+		log.Printf("Button: %d\n",e.Button)
+		rev.Where = image.Pt(int(e.X),int(e.Y))
+		events <- rev
+		return true
+	case *sdl.MouseMotionEvent:
+
+		return true
+	case *sdl.MouseWheelEvent:
+		return true
+	case *sdl.QuitEvent:
+		events <- new(wde.CloseEvent)
+		return true
+	case *sdl.WindowEvent:
+		switch e.Event {
+			//http://wiki.libsdl.org/moin.fcg/SDL_WindowEvent
+		case sdl.WINDOWEVENT_SHOWN:
+			log.Println("Window shown!")
+		case sdl.WINDOWEVENT_RESTORED:
+			log.Println("Window restored.")
+		case sdl.WINDOWEVENT_EXPOSED:
+			log.Println("Window exposed, whatever that means...")
+		case sdl.WINDOWEVENT_HIDDEN:
+			log.Println("Window hidden.. sneaky thing.")
+		case sdl.WINDOWEVENT_MAXIMIZED:
+			log.Println("Window Maximized!")
+		case sdl.WINDOWEVENT_MINIMIZED:
+			log.Println("Window Minimized!")
+		case sdl.WINDOWEVENT_ENTER:
+			events <- new(wde.MouseEnteredEvent)
+			log.Println("Mouse enter...")
+		case sdl.WINDOWEVENT_LEAVE:
+			events <- new(wde.MouseExitedEvent)
+			log.Println("Mouse leave...")
+		case sdl.WINDOWEVENT_RESIZED:
+			log.Printf("resize to: %d %d\n", e.Data1, e.Data2)
+			rev := new(wde.ResizeEvent)
+			rev.Height = int(e.Data1)
+			rev.Width = int(e.Data2)
+			events <- rev
+		case sdl.WINDOWEVENT_CLOSE:
+			log.Println("Close the window please.")
+			events <- &wde.CloseEvent{}
+		case sdl.WINDOWEVENT_FOCUS_GAINED:
+			log.Println("Focus gained, woot!")
+		case sdl.WINDOWEVENT_FOCUS_LOST:
+			log.Println("Focus lost, must have ADHD.")
+		case sdl.WINDOWEVENT_MOVED:
+			log.Printf("please move window to %d %d.\n", e.Data1, e.Data2)
+		default:
+			log.Printf("UNRECOGNIZED WINDOW EVENT: %d\n", e.Event)
+		}
+		return true
+	}
+	return false
+}
+
+func (w *Window) setupWindow() error {
+	window := sdl.CreateWindow("", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, w.width, w.height, sdl.WINDOW_SHOWN)
+	if window == nil {
+		return sdl.GetError()
+	}
+
+	renderer := sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
+	if renderer == nil {
+		return sdl.GetError()
+	}
 
 	w.w = window
-	w.r = render
+	w.r = renderer
+	return nil
+}
+
+/*
+func (w *Window) manageThread(width, height int, ready chan error) {
+	runtime.LockOSThread()
+
+	window := sdl.CreateWindow("", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, w.width, w.height, sdl.WINDOW_SHOWN)
+	if window == nil {
+		fmt.Fprintf(os.Stderr, "Failed to create window: %s\n", sdl.GetError());
+		os.Exit(1);
+	}
+
+	renderer := sdl.CreateRenderer(window, -1, sdl.RENDERER_ACCELERATED)
+	if renderer == nil {
+		fmt.Fprintf(os.Stderr, "Failed to create renderer: %s\n", sdl.GetError());
+		os.Exit(2);
+	}
+
+	w.w = window
+	w.r = renderer
 
 	w.w.Show()
 
@@ -239,6 +328,7 @@ func (w *Window) manageThread(width, height int, ready chan error) {
 		}
 	}
 }
+*/
 
 func ConvertKeyCode(key sdl.Scancode) string {
 	//v, ok := keyMap[key]
